@@ -100,7 +100,8 @@ func (p *RuleProgress) Add(v int) {
 	}
 }
 
-func (r Result) DownloadResults(ctx context.Context, rules []*ExtractionRule, baseDir string, rp *RuleProgress) Result {
+func (r Result) DownloadResults(ctx context.Context, rules []*ExtractionRule, baseDir string, rp *RuleProgress, options ...DownloadOptions) Result {
+	downloadOptions := mergeDownloadOptions(options...)
 	for _, rule := range rules {
 		if !rule.Download && len(rule.Children) == 0 {
 			continue
@@ -117,6 +118,7 @@ func (r Result) DownloadResults(ctx context.Context, rules []*ExtractionRule, ba
 			dir = replacePlaceholders(dir, 0)
 		}
 		if rule.Download {
+			ruleDownloadOptions := mergeRuleDownloadOptions(downloadOptions, rule.Options)
 			//todo check for to key and is object. then convert it to a map instead and read the key
 			urlResults := r.GetResultStringArray(rule.Name)
 			var downloadList = make([]string, len(urlResults))
@@ -135,7 +137,7 @@ func (r Result) DownloadResults(ctx context.Context, rules []*ExtractionRule, ba
 				go func() {
 					defer s.Release(1)
 					defer wg.Done()
-					p, err := downloadResource(ctx, u, dir)
+					p, err := downloadResource(ctx, u, dir, ruleDownloadOptions)
 					if err != nil {
 						slog.Error("failed downloading resource", "url", u, "err", err)
 						p = u
@@ -154,7 +156,7 @@ func (r Result) DownloadResults(ctx context.Context, rules []*ExtractionRule, ba
 			}
 			var output []Result
 			for _, v := range results {
-				p := v.DownloadResults(ctx, rule.Children, dir, rp)
+				p := v.DownloadResults(ctx, rule.Children, dir, rp, downloadOptions)
 				output = append(output, p)
 			}
 			r[rule.Name] = output
@@ -164,12 +166,37 @@ func (r Result) DownloadResults(ctx context.Context, rules []*ExtractionRule, ba
 				continue
 			}
 
-			p := v.DownloadResults(ctx, rule.Children, dir, rp)
+			p := v.DownloadResults(ctx, rule.Children, dir, rp, downloadOptions)
 			r[rule.Name] = p
 		}
 
 	}
 	return r
+}
+
+func mergeDownloadOptions(options ...DownloadOptions) DownloadOptions {
+	var merged DownloadOptions
+	for _, option := range options {
+		merged = mergeDownloadOption(merged, &option)
+	}
+	return merged
+}
+
+func mergeRuleDownloadOptions(base DownloadOptions, option *DownloadOptions) DownloadOptions {
+	return mergeDownloadOption(mergeDownloadOptions(base), option)
+}
+
+func mergeDownloadOption(base DownloadOptions, option *DownloadOptions) DownloadOptions {
+	if option == nil {
+		return base
+	}
+	if len(option.Headers) > 0 && base.Headers == nil {
+		base.Headers = make(map[string]string, len(option.Headers))
+	}
+	for key, value := range option.Headers {
+		base.Headers[key] = value
+	}
+	return base
 }
 
 func replacePlaceholders(s string, index int) string {
@@ -333,7 +360,7 @@ func ScrapeIntoStruct(fetcher Fetcher, pageURL string, rules []*ExtractionRule, 
 }
 
 // 3) downloadResource: fetches a URL and writes it under saveDir, returning the local path.
-func downloadResource(ctx context.Context, rawURL string, saveDir string) (string, error) {
+func downloadResource(ctx context.Context, rawURL string, saveDir string, options DownloadOptions) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", err
@@ -359,7 +386,7 @@ func downloadResource(ctx context.Context, rawURL string, saveDir string) (strin
 	}
 
 	tmpPath := outPath + "." + uuid.NewString() + ".tmp"
-	if err := retryResourceDownload(ctx, rawURL, tmpPath); err != nil {
+	if err := retryResourceDownload(ctx, rawURL, tmpPath, options); err != nil {
 		_ = os.Remove(tmpPath)
 		return "", err
 	}
@@ -370,7 +397,7 @@ func downloadResource(ctx context.Context, rawURL string, saveDir string) (strin
 	return outPath, nil
 }
 
-func retryResourceDownload(ctx context.Context, rawURL, outPath string) error {
+func retryResourceDownload(ctx context.Context, rawURL, outPath string, options DownloadOptions) error {
 	b := backoff.NewExponentialBackOff()
 	b.InitialInterval = resourceDownloadInitialInterval
 	b.MaxInterval = resourceDownloadMaxInterval
@@ -378,7 +405,7 @@ func retryResourceDownload(ctx context.Context, rawURL, outPath string) error {
 	b.Reset()
 
 	for {
-		retryAfter, err := downloadResourceOnce(ctx, rawURL, outPath)
+		retryAfter, err := downloadResourceOnce(ctx, rawURL, outPath, options)
 		if err == nil {
 			return nil
 		}
@@ -405,13 +432,16 @@ func retryResourceDownload(ctx context.Context, rawURL, outPath string) error {
 	}
 }
 
-func downloadResourceOnce(ctx context.Context, rawURL, outPath string) (time.Duration, error) {
+func downloadResourceOnce(ctx context.Context, rawURL, outPath string, options DownloadOptions) (time.Duration, error) {
 	r, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 0, backoff.Permanent(err)
 	}
 	if userAgent := randomUserAgent(); userAgent != "" {
 		r.Header.Set("User-Agent", userAgent)
+	}
+	for key, value := range options.Headers {
+		r.Header.Set(key, value)
 	}
 
 	resp, err := http.DefaultClient.Do(r)

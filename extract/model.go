@@ -22,12 +22,18 @@ type ExtractionRule struct {
 	Attr       string            `json:"attr,omitempty" yaml:"attr,omitempty" bson:"attr,omitempty"`
 	Multiple   bool              `json:"multiple,omitempty" yaml:"multiple,omitempty" bson:"multiple,omitempty"`
 	Download   bool              `json:"download,omitempty" yaml:"download,omitempty" bson:"download,omitempty"`
+	Options    *DownloadOptions  `json:"options,omitempty" yaml:"options,omitempty" bson:"options,omitempty"`
 	Visit      bool              `json:"visit" yaml:"visit" bson:"visit"`
 	Flatten    bool              `json:"flatten,omitempty" yaml:"flatten,omitempty" bson:"flatten,omitempty"`
 	SaveDir    string            `json:"save_dir,omitempty" yaml:"save_dir,omitempty" bson:"save_dir,omitempty"`
 	Children   []*ExtractionRule `json:"children,omitempty" yaml:"children,omitempty" bson:"children,omitempty"`
 	Transforms []*Transforms     `json:"transforms,omitempty" yaml:"transforms,omitempty" bson:"transforms,omitempty"`
 }
+
+type DownloadOptions struct {
+	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty" bson:"headers,omitempty"`
+}
+
 type Transforms struct {
 	Match   string `json:"match"`
 	Split   bool   `json:"split"`
