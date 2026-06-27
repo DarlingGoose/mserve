@@ -31,7 +31,8 @@ type ExtractionRule struct {
 }
 
 type DownloadOptions struct {
-	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty" bson:"headers,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty" yaml:"headers,omitempty" bson:"headers,omitempty"`
+	PreservePath bool              `json:"preserve_path,omitempty" yaml:"preserve_path,omitempty" bson:"preserve_path,omitempty"`
 }
 
 type Transforms struct {

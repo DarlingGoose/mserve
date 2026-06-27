@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -196,6 +197,9 @@ func mergeDownloadOption(base DownloadOptions, option *DownloadOptions) Download
 	for key, value := range option.Headers {
 		base.Headers[key] = value
 	}
+	if option.PreservePath {
+		base.PreservePath = true
+	}
 	return base
 }
 
@@ -368,6 +372,12 @@ func downloadResource(ctx context.Context, rawURL string, saveDir string, option
 	filename := filepath.Base(u.Path)
 	if filename == "" || filename == "/" {
 		filename = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	if options.PreservePath {
+		cleanPath := strings.Trim(strings.TrimPrefix(path.Clean(u.Path), "/"), ".")
+		if cleanPath != "" {
+			filename = strings.ReplaceAll(cleanPath, "/", "_")
+		}
 	}
 	p := removeDuplicateExt(filename)
 	outPath := filepath.Join(saveDir, p)
