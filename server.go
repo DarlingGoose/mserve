@@ -48,9 +48,9 @@ type Server struct {
 	SSLConfig       SSLConfig
 	healthCheckPath string
 	endpoints       []Endpoint
-	//tp              *trace.TracerProvider
+	// tp              *trace.TracerProvider
 	mr *metric.MeterProvider
-	//rootEnabled bool
+	// rootEnabled bool
 }
 
 // NewServer creates a new Server instance
@@ -170,8 +170,8 @@ func pathToTitle(path string) string {
 
 // AddEndpoints registers endpoints on the router
 func (s *Server) AddEndpoints(ctx context.Context, endpoints ...*Endpoint) error {
-	//s.sessionClient.Authenticate()
-	//session.SetSessionCookie()
+	// s.sessionClient.Authenticate()
+	// session.SetSessionCookie()
 	for _, e := range endpoints {
 		if e.Path == "" {
 			return fmt.Errorf("empty path")
@@ -244,7 +244,7 @@ func (s *Server) Run(ctx context.Context) error {
 	certmagic.DefaultACME.Agreed = s.SSLConfig.Agreed
 	certmagic.DefaultACME.Email = s.SSLConfig.Email
 	rootHandler := s.router
-	//rootHandler := otelhttp.NewHandler(s.router, "http-server")
+	// rootHandler := otelhttp.NewHandler(s.router, "http-server")
 	go func() {
 		if !s.SSLConfig.Enabled {
 			if s.SSLConfig.Port <= 0 {
@@ -289,12 +289,14 @@ func (s *Server) HealthCheck(path string, f func(ctx context.Context) error) *Se
 	})
 	return s
 }
+
 func (s *Server) Endpoints() []Endpoint {
 	return s.endpoints
 }
+
 func (s *Server) SetupOServer(ctx context.Context, o oserver.OServer) *Server {
 	handler := oserver.NewHandler(o, oserver.ContentTypeJSON)
-	//fix this resouce needs to be calculated dynamicly
+	// fix this resouce needs to be calculated dynamicly
 	s.AddMiddleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			usersession, ctx, _ := s.sessionClient.Authenticate(w, r)
@@ -308,11 +310,9 @@ func (s *Server) SetupOServer(ctx context.Context, o oserver.OServer) *Server {
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
-
 		})
 	})
 	err := s.AddEndpoints(ctx, makeEndpoints(handler)...)
-
 	if err != nil {
 		slog.Error("failed adding o server endpoints", "err", err)
 	}
@@ -360,19 +360,19 @@ func (s *Server) hasAccess(ctx context.Context, resource string, userId, account
 	hasAccess, ok := s.goCache.Get(k)
 	if ok {
 		if h, ok := hasAccess.(bool); ok && h {
-			slog.Info("has access from cache")
+			slog.Debug("has access from cache")
 			return true
 		}
 	}
-	slog.Info("access from cache", "user_id", userId, "account_id", accountId, "method", method, "resource", resource)
+	slog.Debug("access from cache", "user_id", userId, "account_id", accountId, "method", method, "resource", resource)
 	can, err := s.rbac.Can(ctx, userId, resource, rbac.HTTPMethodToAction(method))
 	if err != nil {
 		slog.Error("Error checking permissions", "err", err)
 		return false
 	}
-	slog.Info("setting access from cache", "can", can)
+	slog.Debug("setting access from cache", "can", can)
 
-	//todo support scopes
+	// todo support scopes
 	s.goCache.Set(k, can, goCache.DefaultExpiration)
 	return can
 }
