@@ -92,9 +92,15 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-WebAuthn-Session-ID")
+		w.Header().Set(
+			"Access-Control-Allow-Headers",
+			"Content-Type, Authorization, Authentication-Key, Range, Content-Range, X-WebAuthn-Session-ID",
+		)
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Add("Access-Control-Expose-Headers", "X-WebAuthn-Session-ID")
+		w.Header().Set(
+			"Access-Control-Expose-Headers",
+			"X-WebAuthn-Session-ID, Accept-Ranges, Content-Range, Content-Length",
+		)
 		// handle preflight
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
