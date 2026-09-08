@@ -79,18 +79,11 @@ func NewServer(serviceName string, r *rbac.Manager, domains []string, sessionCli
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Change "*" to a specific origin in prod!
-		var origin string
-		if o, err := s.matchOrigin(r); err != nil {
-			if len(s.allowedOrigins) > 0 {
-				origin = s.allowedOrigins[0]
-			} else {
-				origin = "127.0.0.1"
-			}
-		} else {
-			origin = o
+		origin, _ := s.matchOrigin(r)
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Add("Vary", "Origin")
 		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set(
 			"Access-Control-Allow-Headers",
@@ -111,13 +104,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 }
 
 func getOrigin(r *http.Request) string {
-	if v := r.Header.Get("Origin"); v != "" {
-		return v
-	}
-	if v := r.Header.Get("Referer"); v != "" {
-		return v
-	}
-	return ""
+	return r.Header.Get("Origin")
 }
 
 func (s *Server) matchOrigin(r *http.Request) (string, error) {
