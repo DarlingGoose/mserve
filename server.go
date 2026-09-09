@@ -84,7 +84,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
 		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE,HEAD, OPTIONS")
 		w.Header().Set(
 			"Access-Control-Allow-Headers",
 			"Content-Type, Authorization, Authentication-Key, Range, Content-Range, X-WebAuthn-Session-ID",
@@ -104,7 +104,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 }
 
 func getOrigin(r *http.Request) string {
-	return r.Header.Get("Origin")
+	return strings.TrimSuffix(r.Header.Get("Origin"), "/")
 }
 
 func (s *Server) matchOrigin(r *http.Request) (string, error) {
