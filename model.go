@@ -31,9 +31,9 @@ type Endpoint struct {
 
 // AccessPolicy defines how an endpoint is exposed. Every endpoint must either
 // set Public, set Authenticated, or declare legacy Roles. ResourceType and
-// ResourceParam turn an authenticated policy into a concrete RBAC check. For
-// example, ResourceType "lesson" and ResourceParam "lesson_id" authorize the
-// resource "<service>.lesson.<lesson_id>".
+// ResourceParam turn an authenticated policy into an rbac.Check request. For
+// example, ResourceType "lesson" and ResourceParam "lesson_id" check the
+// concrete scope rbac.Scope{Type: "lesson", ID: mux.Vars(r)["lesson_id"]}.
 type AccessPolicy struct {
 	Public        bool        `json:"public,omitempty"`
 	Authenticated bool        `json:"authenticated,omitempty"`
@@ -109,7 +109,7 @@ func (e *Endpoint) Init(ctx context.Context, service string, manager *rbac.Manag
 		for _, m := range e.Methods {
 			resource := endpointResourceName(service, e.Path)
 			if e.Access.ResourceType != "" {
-				resource = scopedResourceName(service, e.Access.ResourceType, "**")
+				resource = e.Access.ResourceType
 			}
 			p := &rbac.Permission{
 				Resource:  resource,
@@ -120,7 +120,7 @@ func (e *Endpoint) Init(ctx context.Context, service string, manager *rbac.Manag
 				p.Action = e.Access.Action
 			}
 			if p.Action == "" {
-				p.Action = httpMethodToAction(m)
+				p.Action = rbac.HTTPMethodToAction(m)
 			}
 			_ = manager.CreatePermission(ctx, p)
 			r, err := manager.Roles.GetRoleByName(ctx, role.Role)

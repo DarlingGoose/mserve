@@ -12,7 +12,13 @@ import (
 	"github.com/gorilla/mux"
 )
 
-func TestHTTPMethodToAction(t *testing.T) {
+type resourceResolverFunc func(context.Context, rbac.ResourceRef) (*rbac.ResourceRef, error)
+
+func (f resourceResolverFunc) Parent(ctx context.Context, resource rbac.ResourceRef) (*rbac.ResourceRef, error) {
+	return f(ctx, resource)
+}
+
+func TestRBACHTTPMethodToAction(t *testing.T) {
 	tests := map[string]rbac.Action{
 		http.MethodGet:    rbac.ActionRead,
 		http.MethodHead:   rbac.ActionRead,
@@ -20,12 +26,12 @@ func TestHTTPMethodToAction(t *testing.T) {
 		http.MethodPut:    rbac.ActionUpdate,
 		http.MethodPatch:  rbac.ActionUpdate,
 		http.MethodDelete: rbac.ActionDelete,
-		http.MethodTrace:  "",
+		http.MethodTrace:  rbac.ActionUnknown,
 	}
 	for method, want := range tests {
 		t.Run(method, func(t *testing.T) {
-			if got := httpMethodToAction(method); got != want {
-				t.Fatalf("httpMethodToAction(%q) = %q, want %q", method, got, want)
+			if got := rbac.HTTPMethodToAction(method); got != want {
+				t.Fatalf("rbac.HTTPMethodToAction(%q) = %q, want %q", method, got, want)
 			}
 		})
 	}
@@ -127,19 +133,108 @@ func TestAuthenticatedEndpointRejectsAnonymousRequests(t *testing.T) {
 	}
 }
 
-func TestScopedResourceUsesConcreteRouteValue(t *testing.T) {
-	server := NewServer("learning", nil, nil, nil, SSLConfig{})
-	endpoint := &Endpoint{Access: AccessPolicy{ResourceType: "lesson", ResourceParam: "lesson_id"}}
-	request := mux.SetURLVars(httptest.NewRequest(http.MethodPatch, "/lessons/unit/1", nil), map[string]string{
-		"lesson_id": "unit/1",
-	})
-
-	got, err := server.endpointResource(endpoint, request)
+func TestAuthenticatedEndpointAcceptsRotatingSessionKeys(t *testing.T) {
+	rootSecret := []byte("0123456789abcdef0123456789abcdef")
+	keys, err := session.NewRotatingKeyRing(rootSecret, time.Hour, 24*time.Hour)
 	if err != nil {
-		t.Fatalf("endpointResource() error = %v", err)
+		t.Fatalf("NewRotatingKeyRing() error = %v", err)
 	}
-	if want := "learning.lesson.unit%2F1"; got != want {
-		t.Fatalf("endpointResource() = %q, want %q", got, want)
+	sessionClient, err := session.NewClientWithKeyRing(nil, nil, keys, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewClientWithKeyRing() error = %v", err)
+	}
+	server := NewServer("learning", nil, nil, sessionClient, SSLConfig{})
+	err = server.AddEndpoints(context.Background(), &Endpoint{
+		Path:    "/workspace",
+		Methods: []string{http.MethodGet},
+		Handler: func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) },
+		Access:  AccessPolicy{Authenticated: true},
+	})
+	if err != nil {
+		t.Fatalf("AddEndpoints() error = %v", err)
+	}
+
+	cookieRecorder := httptest.NewRecorder()
+	err = session.SetSessionCookieWithKeyRing(cookieRecorder, &session.UserSessionData{
+		UserID:    "teacher-1",
+		SignedIn:  true,
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, keys)
+	if err != nil {
+		t.Fatalf("SetSessionCookieWithKeyRing() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/workspace", nil)
+	request.AddCookie(cookieRecorder.Result().Cookies()[0])
+	recorder := httptest.NewRecorder()
+	server.router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("rotating-key session status = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+}
+
+func TestScopedEndpointUsesRBACRoleAssignments(t *testing.T) {
+	ctx := context.Background()
+	repository := rbac.NewMockRepo()
+	manager := rbac.NewMockRepoManager(repository)
+	permission := &rbac.Permission{ID: "update-lesson", Resource: "lesson", Action: rbac.ActionUpdate}
+	role := &rbac.Role{ID: "teacher", Name: "teacher"}
+	if err := manager.CreatePermission(ctx, permission); err != nil {
+		t.Fatalf("CreatePermission() error = %v", err)
+	}
+	if err := manager.CreateRole(ctx, role); err != nil {
+		t.Fatalf("CreateRole() error = %v", err)
+	}
+	if err := manager.AssignPermissionToRole(ctx, role.ID, permission.ID); err != nil {
+		t.Fatalf("AssignPermissionToRole() error = %v", err)
+	}
+	if err := manager.AssignRole(ctx, rbac.RoleAssignment{
+		UserID: "teacher-1",
+		RoleID: role.ID,
+		Scope:  rbac.Scope{Type: "lesson", ID: "lesson-1"},
+	}); err != nil {
+		t.Fatalf("AssignRole() error = %v", err)
+	}
+
+	server := NewServer("learning", manager, nil, nil, SSLConfig{})
+	endpoint := &Endpoint{Access: AccessPolicy{
+		Authenticated: true,
+		ResourceType:  "lesson",
+		ResourceParam: "lesson_id",
+		Action:        rbac.ActionUpdate,
+	}}
+	request := mux.SetURLVars(httptest.NewRequest(http.MethodPatch, "/lessons/lesson-1", nil), map[string]string{
+		"lesson_id": "lesson-1",
+	})
+	allowed, err := server.endpointAccess(ctx, endpoint, request, "teacher-1", rbac.ActionUpdate)
+	if err != nil || !allowed {
+		t.Fatalf("assigned scope access = %v, %v; want true", allowed, err)
+	}
+
+	request = mux.SetURLVars(httptest.NewRequest(http.MethodPatch, "/lessons/lesson-2", nil), map[string]string{
+		"lesson_id": "lesson-2",
+	})
+	allowed, err = server.endpointAccess(ctx, endpoint, request, "teacher-1", rbac.ActionUpdate)
+	if err != nil || allowed {
+		t.Fatalf("different scope access = %v, %v; want false", allowed, err)
+	}
+
+	manager.Resolver = resourceResolverFunc(func(_ context.Context, resource rbac.ResourceRef) (*rbac.ResourceRef, error) {
+		if resource == (rbac.ResourceRef{Type: "lesson", ID: "lesson-2"}) {
+			return &rbac.ResourceRef{Type: "guide", ID: "guide-1"}, nil
+		}
+		return nil, nil
+	})
+	manager.Inheritance = rbac.ActionInheritancePolicy{rbac.ActionUpdate: true}
+	if err := manager.AssignRole(ctx, rbac.RoleAssignment{
+		UserID: "teacher-2",
+		RoleID: role.ID,
+		Scope:  rbac.Scope{Type: "guide", ID: "guide-1"},
+	}); err != nil {
+		t.Fatalf("AssignRole() inherited scope error = %v", err)
+	}
+	allowed, err = server.endpointAccess(ctx, endpoint, request, "teacher-2", rbac.ActionUpdate)
+	if err != nil || !allowed {
+		t.Fatalf("inherited scope access = %v, %v; want true", allowed, err)
 	}
 }
 

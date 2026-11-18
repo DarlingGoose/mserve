@@ -8,7 +8,6 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -193,7 +192,7 @@ func (s *Server) AddEndpoints(ctx context.Context, endpoints ...*Endpoint) error
 		}
 		if (len(e.Roles) > 0 || e.Access.ResourceType != "" || e.Access.Action != "") && e.Access.Action == "" {
 			for _, method := range e.Methods {
-				if httpMethodToAction(method) == "" {
+				if rbac.HTTPMethodToAction(method) == rbac.ActionUnknown {
 					return fmt.Errorf("endpoint %q has no RBAC action mapping for HTTP method %q", e.Path, method)
 				}
 			}
@@ -241,16 +240,17 @@ func (s *Server) authorizeEndpoint(endpoint *Endpoint) http.HandlerFunc {
 				http.Error(w, "authorization is not configured", http.StatusInternalServerError)
 				return
 			}
-			resource, resourceErr := s.endpointResource(endpoint, r)
-			if resourceErr != nil {
-				http.Error(w, resourceErr.Error(), http.StatusBadRequest)
-				return
-			}
 			action := endpoint.Access.Action
 			if action == "" {
-				action = httpMethodToAction(r.Method)
+				action = rbac.HTTPMethodToAction(r.Method)
 			}
-			if !s.hasAccess(ctx, resource, userSession.UserID, action) {
+			allowed, accessErr := s.endpointAccess(ctx, endpoint, r, userSession.UserID, action)
+			if accessErr != nil {
+				slog.Error("error checking endpoint access", "err", accessErr, "user_id", userSession.UserID, "path", endpoint.Path)
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			if !allowed {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
@@ -259,43 +259,23 @@ func (s *Server) authorizeEndpoint(endpoint *Endpoint) http.HandlerFunc {
 	}
 }
 
-func (s *Server) endpointResource(endpoint *Endpoint, r *http.Request) (string, error) {
+func (s *Server) endpointAccess(ctx context.Context, endpoint *Endpoint, r *http.Request, userID string, action rbac.Action) (bool, error) {
 	if endpoint.Access.ResourceType == "" {
-		return endpointResourceName(s.ServiceName, endpoint.Path), nil
+		return s.rbac.Can(ctx, userID, endpointResourceName(s.ServiceName, endpoint.Path), action)
 	}
-	resourceID := ""
-	if endpoint.Access.ResourceParam != "" {
-		resourceID = mux.Vars(r)[endpoint.Access.ResourceParam]
-		if resourceID == "" {
-			return "", fmt.Errorf("missing resource parameter %q", endpoint.Access.ResourceParam)
-		}
+	if endpoint.Access.ResourceParam == "" {
+		return s.rbac.Can(ctx, userID, endpoint.Access.ResourceType, action)
 	}
-	return scopedResourceName(s.ServiceName, endpoint.Access.ResourceType, resourceID), nil
-}
-
-func scopedResourceName(service, resourceType, resourceID string) string {
-	parts := []string{strings.Trim(service, "."), strings.Trim(resourceType, ".")}
-	if resourceID != "" {
-		parts = append(parts, url.PathEscape(resourceID))
+	resourceID := mux.Vars(r)[endpoint.Access.ResourceParam]
+	if resourceID == "" {
+		return false, fmt.Errorf("missing resource parameter %q", endpoint.Access.ResourceParam)
 	}
-	return strings.Join(parts, ".")
-}
-
-// httpMethodToAction corrects PATCH and DELETE handling in rbac v1.0.19 and
-// fails closed for methods without a CRUD mapping.
-func httpMethodToAction(method string) rbac.Action {
-	switch method {
-	case http.MethodGet, http.MethodHead:
-		return rbac.ActionRead
-	case http.MethodPost:
-		return rbac.ActionCreate
-	case http.MethodPut, http.MethodPatch:
-		return rbac.ActionUpdate
-	case http.MethodDelete:
-		return rbac.ActionDelete
-	default:
-		return ""
-	}
+	return s.rbac.Check(ctx, rbac.CheckRequest{
+		UserID:       userID,
+		ResourceType: endpoint.Access.ResourceType,
+		ResourceID:   resourceID,
+		Action:       action,
+	})
 }
 
 // OTEL_METRICS_EXPORTER
@@ -421,18 +401,6 @@ func (s *Server) SetupUserLogin(ctx context.Context, userServer *user.Server) *S
 
 func (s *Server) SetupOClient(o oclient.OAuthService) *Server {
 	return s
-}
-
-func (s *Server) hasAccess(ctx context.Context, resource, userID string, action rbac.Action) bool {
-	if endpointResourceName(s.ServiceName, s.healthCheckPath) == resource {
-		return true
-	}
-	can, err := s.rbac.Can(ctx, userID, resource, action)
-	if err != nil {
-		slog.Error("error checking permissions", "err", err, "user_id", userID, "resource", resource, "action", action)
-		return false
-	}
-	return can
 }
 
 func (s *Server) GenerateOpenAPIDocs() *Server {
