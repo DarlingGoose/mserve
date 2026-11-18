@@ -110,6 +110,7 @@ func makeUserEndpoints(u *user.Server) []*Endpoint {
 			Handler: u.RegisterHandler,
 			Path:    "/user/register",
 			Methods: []string{http.MethodPost},
+			Access:  AccessPolicy{Public: true},
 			Request: Request{
 				Body: user.RegisterRequest{},
 			},
@@ -126,6 +127,7 @@ func makeUserEndpoints(u *user.Server) []*Endpoint {
 			Handler: u.LoginPasswordHandler,
 			Path:    "/user/login",
 			Methods: []string{http.MethodPost},
+			Access:  AccessPolicy{Public: true},
 			Request: Request{
 				Body: user.LoginRequest{},
 			},
@@ -142,6 +144,7 @@ func makeUserEndpoints(u *user.Server) []*Endpoint {
 			Handler: u.LoginTOTPHandler,
 			Path:    "/user/login/totp",
 			Methods: []string{http.MethodPost},
+			Access:  AccessPolicy{Public: true},
 			Request: Request{
 				Body: user.TOTPLoginRequest{},
 			},
@@ -158,6 +161,7 @@ func makeUserEndpoints(u *user.Server) []*Endpoint {
 			Handler: u.LogoutHandler,
 			Path:    "/user/logout",
 			Methods: []string{http.MethodGet},
+			Access:  AccessPolicy{Public: true},
 			Responses: []Response{
 				{
 					Status: http.StatusOK,
@@ -269,6 +273,7 @@ func makeUserEndpoints(u *user.Server) []*Endpoint {
 			Handler: u.BeginPasskeyLoginHandler,
 			Path:    "/user/login/begin_passkey",
 			Methods: []string{http.MethodPost},
+			Access:  AccessPolicy{Public: true},
 			Request: Request{
 				Body: user.BeginPasskeyLoginRequest{},
 			},
@@ -290,6 +295,7 @@ func makeUserEndpoints(u *user.Server) []*Endpoint {
 			Handler: u.FinishPasskeyLoginHandler,
 			Path:    "/user/login/finish_passkey",
 			Methods: []string{http.MethodPost},
+			Access:  AccessPolicy{Public: true},
 			Request: Request{Headers: map[string]ROption{
 				"X-WebAuthn-Session-ID": {},
 			},
@@ -327,6 +333,7 @@ func makeUserEndpoints(u *user.Server) []*Endpoint {
 			Handler: u.GenerateTOTPSecretHandler,
 			Path:    "/user/generate/totp",
 			Methods: []string{http.MethodPost},
+			Access:  AccessPolicy{Authenticated: true},
 			Responses: []Response{
 				{
 					Status: http.StatusOK,
@@ -341,6 +348,7 @@ func makeUserEndpoints(u *user.Server) []*Endpoint {
 			Handler: u.QRCode,
 			Path:    "/user/generate/qrcode",
 			Methods: []string{http.MethodGet},
+			Access:  AccessPolicy{Authenticated: true},
 			Request: Request{
 				Params: map[string]ROption{
 					"u": {
@@ -361,6 +369,7 @@ func makeUserEndpoints(u *user.Server) []*Endpoint {
 			Handler: u.VerifyAndEnableTOTPHandler,
 			Path:    "/user/verify/totp",
 			Methods: []string{http.MethodPost},
+			Access:  AccessPolicy{Authenticated: true},
 			Request: Request{
 				Body: user.VerifyTOTPRequest{},
 			},
@@ -935,6 +944,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/authorize",
 			Handler:     handler.Authorize,
 			Internal:    false,
+			Access:      AccessPolicy{Public: true},
 			Request: Request{
 				Params: map[string]ROption{
 					"response_type":         {},
@@ -964,6 +974,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/consent",
 			Handler:     handler.Consent,
 			Internal:    false,
+			Access:      AccessPolicy{Public: true},
 			Request: Request{
 				Headers: nil,
 				Body:    oserver.AuthRequest{},
@@ -983,6 +994,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/token",
 			Handler:     handler.Token,
 			Internal:    false,
+			Access:      AccessPolicy{Public: true},
 			Request: Request{
 				Params:  nil,
 				Headers: map[string]ROption{"Content-Type": {}},
@@ -1001,6 +1013,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/revoke",
 			Handler:     handler.Revoke,
 			Internal:    false,
+			Access:      AccessPolicy{Public: true},
 			Request: Request{
 				Headers: map[string]ROption{"Content-Type": {}},
 				Body:    oserver.RevocationRequest{},
@@ -1017,6 +1030,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/introspect",
 			Handler:     handler.Introspect,
 			Internal:    false,
+			Access:      AccessPolicy{Public: true},
 			Request: Request{
 				Headers: map[string]ROption{"Content-Type": {}},
 				Body:    oserver.IntrospectRequest{},
@@ -1033,6 +1047,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/.well-known/jwks.json",
 			Handler:     handler.JWKs,
 			Internal:    false,
+			Access:      AccessPolicy{Public: true},
 			Request:     Request{},
 			Responses: []Response{
 				{Status: http.StatusOK, Body: oserver.JWKSet{}},
@@ -1046,6 +1061,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/clients",
 			Handler:     handler.RegisterClient,
 			Internal:    true,
+			Roles:       []Role{{Role: "admin"}},
 			Request: Request{
 				Headers: map[string]ROption{"Content-Type": {}},
 				Body:    oserver.OAuthClient{},
@@ -1062,6 +1078,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/clients/{id}",
 			Handler:     handler.GetClient,
 			Internal:    true,
+			Roles:       []Role{{Role: "admin"}},
 			Request: Request{
 				Params: map[string]ROption{"id": {}},
 			},
@@ -1077,6 +1094,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/clients",
 			Handler:     handler.ListClients,
 			Internal:    true,
+			Roles:       []Role{{Role: "admin"}},
 			Request: Request{
 				Params: map[string]ROption{"account_id": {}},
 			},
@@ -1092,6 +1110,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/clients/{id}",
 			Handler:     handler.UpdateClient,
 			Internal:    true,
+			Roles:       []Role{{Role: "admin"}},
 			Request: Request{
 				Params:  map[string]ROption{"id": {}},
 				Headers: map[string]ROption{"Content-Type": {}},
@@ -1109,6 +1128,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/clients/{id}",
 			Handler:     handler.DeleteClient,
 			Internal:    true,
+			Roles:       []Role{{Role: "admin"}},
 			Request: Request{
 				Params: map[string]ROption{"id": {}},
 			},
@@ -1124,6 +1144,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/clients/{id}/image",
 			Handler:     handler.SetClientImage,
 			Internal:    true,
+			Roles:       []Role{{Role: "admin"}},
 			Request: Request{
 				Params:  map[string]ROption{"id": {}},
 				Headers: map[string]ROption{"Content-Type": {}},
@@ -1140,6 +1161,7 @@ func makeEndpoints(handler oserver.Handler) []*Endpoint {
 			Path:        "/clients/{id}/image",
 			Handler:     handler.SendClientImage,
 			Internal:    true,
+			Roles:       []Role{{Role: "admin"}},
 			Request: Request{
 				Params: map[string]ROption{"id": {}},
 			},

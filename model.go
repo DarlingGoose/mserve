@@ -23,9 +23,49 @@ type Endpoint struct {
 	Internal    bool             `json:"internal"`
 	Request     Request          `json:"request"`
 	Scope       string
-	Responses   []Response `json:"responses"`
-	Roles       []Role     `json:"roles"`
+	Responses   []Response   `json:"responses"`
+	Roles       []Role       `json:"roles"`
+	Access      AccessPolicy `json:"access"`
 	Prefix      bool
+}
+
+// AccessPolicy defines how an endpoint is exposed. Every endpoint must either
+// set Public, set Authenticated, or declare legacy Roles. ResourceType and
+// ResourceParam turn an authenticated policy into a concrete RBAC check. For
+// example, ResourceType "lesson" and ResourceParam "lesson_id" authorize the
+// resource "<service>.lesson.<lesson_id>".
+type AccessPolicy struct {
+	Public        bool        `json:"public,omitempty"`
+	Authenticated bool        `json:"authenticated,omitempty"`
+	ResourceType  string      `json:"resource_type,omitempty"`
+	ResourceParam string      `json:"resource_param,omitempty"`
+	Action        rbac.Action `json:"action,omitempty"`
+}
+
+func (e *Endpoint) validateAccessPolicy() error {
+	policy := e.Access
+	if policy.Public && policy.Authenticated {
+		return fmt.Errorf("endpoint %q cannot be both public and authenticated", e.Path)
+	}
+	if policy.Public && (policy.ResourceType != "" || policy.ResourceParam != "" || policy.Action != "") {
+		return fmt.Errorf("public endpoint %q cannot declare an RBAC resource or action", e.Path)
+	}
+	if policy.Public && len(e.Roles) > 0 {
+		return fmt.Errorf("public endpoint %q cannot declare roles", e.Path)
+	}
+	if policy.ResourceParam != "" && policy.ResourceType == "" {
+		return fmt.Errorf("endpoint %q resource parameter requires a resource type", e.Path)
+	}
+	if policy.ResourceParam != "" && !strings.Contains(e.Path, "{"+policy.ResourceParam+"}") {
+		return fmt.Errorf("endpoint %q does not contain resource parameter %q", e.Path, policy.ResourceParam)
+	}
+	if (policy.ResourceType != "" || policy.ResourceParam != "" || policy.Action != "") && !policy.Authenticated {
+		return fmt.Errorf("endpoint %q RBAC policy must require authentication", e.Path)
+	}
+	if !policy.Public && !policy.Authenticated && len(e.Roles) == 0 {
+		return fmt.Errorf("endpoint %q requires an explicit access policy", e.Path)
+	}
+	return nil
 }
 
 type Request struct {
@@ -55,35 +95,32 @@ type Role struct {
 }
 
 func (e *Endpoint) Init(ctx context.Context, service string, manager *rbac.Manager) error {
-	if manager == nil {
-		return nil
+	if err := e.validateAccessPolicy(); err != nil {
+		return err
 	}
-	defaultRole, _ := manager.Roles.GetRoleByName(ctx, "default")
-	if len(e.Roles) == 0 {
-		for _, m := range e.Methods {
-			p := &rbac.Permission{
-				Resource:  endpointResourceName(service, e.Path), //todo,
-				Action:    rbac.HTTPMethodToAction(m),
-				CreatedAt: time.Now().Unix(),
-			}
-			_ = manager.CreatePermission(ctx, p)
-			err := manager.AssignPermissionToRole(ctx, defaultRole.ID, p.ID)
-			if err != nil {
-				continue
-			}
+	if manager == nil {
+		if len(e.Roles) > 0 || e.Access.ResourceType != "" || e.Access.Action != "" {
+			return fmt.Errorf("endpoint %q requires an RBAC manager", e.Path)
 		}
-
+		return nil
 	}
 	for _, role := range e.Roles {
 		//todo check if permission exists by resource
 		for _, m := range e.Methods {
+			resource := endpointResourceName(service, e.Path)
+			if e.Access.ResourceType != "" {
+				resource = scopedResourceName(service, e.Access.ResourceType, "**")
+			}
 			p := &rbac.Permission{
-				Resource:  endpointResourceName(service, e.Path), //todo,
+				Resource:  resource,
 				Action:    role.Access,
 				CreatedAt: time.Now().Unix(),
 			}
 			if p.Action == "" {
-				p.Action = rbac.HTTPMethodToAction(m)
+				p.Action = e.Access.Action
+			}
+			if p.Action == "" {
+				p.Action = httpMethodToAction(m)
 			}
 			_ = manager.CreatePermission(ctx, p)
 			r, err := manager.Roles.GetRoleByName(ctx, role.Role)
@@ -127,12 +164,13 @@ func GenerateOpenAPI(server *Server, endpoints []Endpoint) (*openapi3.T, error) 
 			{},
 		},
 	}
-	if len(server.allowedOrigins) == 0 {
+	allowedOrigins := server.allowedOriginsSnapshot()
+	if len(allowedOrigins) == 0 {
 		doc.Servers = append(doc.Servers, &openapi3.Server{
 			URL: fmt.Sprintf("http://127.0.0.1:%d", server.SSLConfig.Port),
 		})
 	}
-	for _, endpoint := range server.allowedOrigins {
+	for _, endpoint := range allowedOrigins {
 		doc.Servers = append(doc.Servers, &openapi3.Server{
 			URL: endpoint,
 		})

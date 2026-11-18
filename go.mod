@@ -15,7 +15,6 @@ require (
 	github.com/grafov/m3u8 v0.12.1
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/lib4u/fake-useragent v1.0.6
-	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/schollz/progressbar/v3 v3.19.0
 	github.com/spf13/cobra v1.10.2
