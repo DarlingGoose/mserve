@@ -27,7 +27,6 @@ import (
 	"github.com/DarlingGoose/rbac"
 	"github.com/caddyserver/certmagic"
 	"github.com/gorilla/mux"
-	goCache "github.com/patrickmn/go-cache"
 	"go.opentelemetry.io/otel/sdk/metric"
 )
 
@@ -44,7 +43,6 @@ type Server struct {
 	muOrigins      sync.RWMutex
 	sessionClient  *session.Client
 
-	goCache         *goCache.Cache
 	SSLConfig       SSLConfig
 	healthCheckPath string
 	endpoints       []Endpoint
@@ -70,7 +68,6 @@ func NewServer(serviceName string, r *rbac.Manager, domains []string, sessionCli
 		allowedOrigins: []string{},
 		muOrigins:      sync.RWMutex{},
 		sessionClient:  sessionClient,
-		goCache:        goCache.New(time.Minute*5, time.Minute),
 		SSLConfig:      ssl,
 	}
 	router.Use(s.corsMiddleware)
@@ -109,15 +106,21 @@ func getOrigin(r *http.Request) string {
 
 func (s *Server) matchOrigin(r *http.Request) (string, error) {
 	origin := getOrigin(r)
-	for _, o := range s.allowedOrigins {
+	if origin == "" {
+		return "", nil
+	}
+	for _, o := range s.allowedOriginsSnapshot() {
 		if strings.EqualFold(o, origin) {
 			return origin, nil
 		}
 	}
-	if len(s.allowedOrigins) == 0 {
-		return origin, nil
-	}
 	return "", fmt.Errorf("invalid origin %s", origin)
+}
+
+func (s *Server) allowedOriginsSnapshot() []string {
+	s.muOrigins.RLock()
+	defer s.muOrigins.RUnlock()
+	return append([]string(nil), s.allowedOrigins...)
 }
 
 // AddMiddleware sets up dynamic CORS
@@ -184,8 +187,18 @@ func (s *Server) AddEndpoints(ctx context.Context, endpoints ...*Endpoint) error
 		} else if len(e.Methods) == 1 && e.Methods[0] == http.MethodGet && e.Request.Body != nil {
 			e.Methods[0] = http.MethodPost
 		}
+		if err := e.validateAccessPolicy(); err != nil {
+			return err
+		}
+		if (len(e.Roles) > 0 || e.Access.ResourceType != "" || e.Access.Action != "") && e.Access.Action == "" {
+			for _, method := range e.Methods {
+				if rbac.HTTPMethodToAction(method) == rbac.ActionUnknown {
+					return fmt.Errorf("endpoint %q has no RBAC action mapping for HTTP method %q", e.Path, method)
+				}
+			}
+		}
 
-		handler := e.Handler
+		handler := s.authorizeEndpoint(e)
 		err := e.Init(ctx, s.ServiceName, s.rbac)
 		if err != nil {
 			return err
@@ -204,6 +217,65 @@ func (s *Server) AddEndpoints(ctx context.Context, endpoints ...*Endpoint) error
 		s.endpoints = append(s.endpoints, *e)
 	}
 	return nil
+}
+
+func (s *Server) authorizeEndpoint(endpoint *Endpoint) http.HandlerFunc {
+	if endpoint.Access.Public {
+		return endpoint.Handler
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.sessionClient == nil {
+			http.Error(w, "authentication is not configured", http.StatusInternalServerError)
+			return
+		}
+		userSession, ctx, err := s.sessionClient.Authenticate(w, r)
+		if err != nil || userSession == nil || !userSession.SignedIn {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		needsRBAC := len(endpoint.Roles) > 0 || endpoint.Access.ResourceType != "" || endpoint.Access.Action != ""
+		if needsRBAC {
+			if s.rbac == nil {
+				http.Error(w, "authorization is not configured", http.StatusInternalServerError)
+				return
+			}
+			action := endpoint.Access.Action
+			if action == "" {
+				action = rbac.HTTPMethodToAction(r.Method)
+			}
+			allowed, accessErr := s.endpointAccess(ctx, endpoint, r, userSession.UserID, action)
+			if accessErr != nil {
+				slog.Error("error checking endpoint access", "err", accessErr, "user_id", userSession.UserID, "path", endpoint.Path)
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			if !allowed {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		}
+		endpoint.Handler(w, r.WithContext(ctx))
+	}
+}
+
+func (s *Server) endpointAccess(ctx context.Context, endpoint *Endpoint, r *http.Request, userID string, action rbac.Action) (bool, error) {
+	if endpoint.Access.ResourceType == "" {
+		return s.rbac.Can(ctx, userID, endpointResourceName(s.ServiceName, endpoint.Path), action)
+	}
+	if endpoint.Access.ResourceParam == "" {
+		return s.rbac.Can(ctx, userID, endpoint.Access.ResourceType, action)
+	}
+	resourceID := mux.Vars(r)[endpoint.Access.ResourceParam]
+	if resourceID == "" {
+		return false, fmt.Errorf("missing resource parameter %q", endpoint.Access.ResourceParam)
+	}
+	return s.rbac.Check(ctx, rbac.CheckRequest{
+		UserID:       userID,
+		ResourceType: endpoint.Access.ResourceType,
+		ResourceID:   resourceID,
+		Action:       action,
+	})
 }
 
 // OTEL_METRICS_EXPORTER
@@ -289,22 +361,6 @@ func (s *Server) Endpoints() []Endpoint {
 
 func (s *Server) SetupOServer(ctx context.Context, o oserver.OServer) *Server {
 	handler := oserver.NewHandler(o, oserver.ContentTypeJSON)
-	// fix this resouce needs to be calculated dynamicly
-	s.AddMiddleware(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			usersession, ctx, _ := s.sessionClient.Authenticate(w, r)
-			p := r.URL.Path
-			for k, v := range mux.Vars(r) {
-				p = strings.ReplaceAll(p, "/"+v, "/{"+k+"}")
-			}
-			if !s.hasAccess(ctx, endpointResourceName(s.ServiceName, p), usersession.UserID, usersession.AccountID, r.Method) {
-				slog.Error("forbidden", "user", usersession, "path", p, "resource", endpointResourceName(s.ServiceName, p))
-				http.Error(w, "forbidden "+p, http.StatusForbidden)
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	})
 	err := s.AddEndpoints(ctx, makeEndpoints(handler)...)
 	if err != nil {
 		slog.Error("failed adding o server endpoints", "err", err)
@@ -337,37 +393,14 @@ func (s *Server) SetupUserLogin(ctx context.Context, userServer *user.Server) *S
 	if err != nil {
 		slog.Error("failed adding o server endpoints", "err", err)
 	}
+	// User handlers use this middleware to load the full user record into the
+	// request context. Endpoint authentication remains enforced separately.
 	s.AddMiddleware(userServer.AuthMiddleware)
 	return s
 }
 
 func (s *Server) SetupOClient(o oclient.OAuthService) *Server {
 	return s
-}
-
-func (s *Server) hasAccess(ctx context.Context, resource string, userId, accountId string, method string, scopes ...string) bool {
-	if endpointResourceName(s.ServiceName, s.healthCheckPath) == resource {
-		return true
-	}
-	k := resource + userId + accountId + method
-	hasAccess, ok := s.goCache.Get(k)
-	if ok {
-		if h, ok := hasAccess.(bool); ok && h {
-			slog.Debug("has access from cache")
-			return true
-		}
-	}
-	slog.Debug("access from cache", "user_id", userId, "account_id", accountId, "method", method, "resource", resource)
-	can, err := s.rbac.Can(ctx, userId, resource, rbac.HTTPMethodToAction(method))
-	if err != nil {
-		slog.Error("Error checking permissions", "err", err)
-		return false
-	}
-	slog.Debug("setting access from cache", "can", can)
-
-	// todo support scopes
-	s.goCache.Set(k, can, goCache.DefaultExpiration)
-	return can
 }
 
 func (s *Server) GenerateOpenAPIDocs() *Server {
@@ -421,6 +454,7 @@ func (s *Server) GenerateOpenAPIDocs() *Server {
 		Scope:     "",
 		Responses: nil,
 		Roles:     nil,
+		Access:    AccessPolicy{Public: true},
 	})
 	_ = s.AddEndpoints(context.Background(), &Endpoint{
 		Name:        "Nuxt Plugin",
@@ -454,6 +488,7 @@ func (s *Server) GenerateOpenAPIDocs() *Server {
 			}
 			NuxtPlugin(w, r, api)
 		},
+		Access: AccessPolicy{Public: true},
 	})
 
 	return s
