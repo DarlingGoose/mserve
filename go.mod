@@ -3,6 +3,7 @@ module github.com/DarlingGoose/mserve
 go 1.26.0
 
 require (
+	connectrpc.com/connect v1.20.0
 	github.com/DarlingGoose/credentials v0.0.32
 	github.com/DarlingGoose/rbac v1.0.20
 	github.com/PuerkitoBio/goquery v1.11.0
@@ -24,6 +25,7 @@ require (
 	go.mongodb.org/mongo-driver v1.17.10
 	go.opentelemetry.io/otel/sdk/metric v1.41.0
 	golang.org/x/text v0.42.0
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
 

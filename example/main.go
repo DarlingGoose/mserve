@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/DarlingGoose/credentials/oauth/oserver"
@@ -21,14 +23,12 @@ import (
  */
 func main() {
 	ctx := context.Background()
-	mongoDB, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017").SetAuth(options.Credential{
-		Username: "mongoadmin",
-		Password: "secretpassword",
-	}))
+	databaseConfig := mongoDatabaseConfigFromEnv()
+	mongoDB, err := mongo.Connect(ctx, options.Client().ApplyURI(databaseConfig.URI))
 	if err != nil {
 		log.Fatal(err)
 	}
-	rbacManager, err := rbac.NewMongoStoreManager(ctx, mongoDB.Database("local"))
+	rbacManager, err := rbac.NewMongoStoreManager(ctx, mongoDB.Database(databaseConfig.RBACDatabase))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	oServer := oserver.NewMongoServer(mongoDB.Database("local"))
+	oServer := oserver.NewMongoServer(mongoDB.Database(databaseConfig.OAuthDatabase))
 	//_,_ = oServer.RegisterClient(ctx, &oserver.OAuthClient{
 	//	ClientID:           uuid.New().String(),
 	//	ClientSecret:       uuid.New().String(),
@@ -52,7 +52,7 @@ func main() {
 	ses := session.NewClient(oServer, rbacManager, secret, 24*time.Hour)
 	s := mserve.NewServer("Example", rbacManager, []string{}, ses, mserve.SSLConfig{Port: 8080})
 
-	userServer, err := user.NewServer(user.NewMongoDBStore(mongoDB, "local", "user"), rbacManager, secret, "example.com", "Example", "https://dev.example.com:3000")
+	userServer, err := user.NewServer(user.NewMongoDBStore(mongoDB, databaseConfig.UserDatabase, "user"), rbacManager, secret, "example.com", "Example", "https://dev.example.com:3000")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -64,6 +64,35 @@ func main() {
 
 	_ = generators.NewGoClientGenerator(nil).Generate(generators.NewGenData(), s.Endpoints()...)
 
+}
+
+type mongoDatabaseConfig struct {
+	URI           string
+	RBACDatabase  string
+	OAuthDatabase string
+	UserDatabase  string
+}
+
+// mongoDatabaseConfigFromEnv keeps credentials, RBAC, and OAuth state inside
+// databases chosen by this application. Set MSERVE_DATABASE to isolate a whole
+// deployment, or use the per-store variables when those stores must be split.
+//
+// The default values preserve the example's original behaviour.
+func mongoDatabaseConfigFromEnv() mongoDatabaseConfig {
+	base := envOrDefault("MSERVE_DATABASE", "local")
+	return mongoDatabaseConfig{
+		URI:           envOrDefault("MSERVE_MONGO_URI", "mongodb://mongoadmin:secretpassword@localhost:27017/?authSource=admin"),
+		RBACDatabase:  envOrDefault("MSERVE_RBAC_DATABASE", base),
+		OAuthDatabase: envOrDefault("MSERVE_OAUTH_DATABASE", base),
+		UserDatabase:  envOrDefault("MSERVE_USER_DATABASE", base),
+	}
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func GenerateSecret(length int) ([]byte, error) {
